@@ -1,174 +1,164 @@
-// // test/AgentTokenInvariant.t.sol
-// // SPDX-License-Identifier: MIT
-// pragma solidity ^0.8.20;
+import "forge-std/console.sol";
+import {Test, console2} from "forge-std/Test.sol";
+import "../mocks/ERC20Mock.sol";
+import {MockUniswapFactory} from "./mocks/MockUniswapFactory.sol";
+import {AgentTokenHandler} from "./handler.t.sol";
+import {MockUniswapRouter} from "./mocks/MockUniswapRouter.sol";
+import "../../contracts/virtualPersona/AgentFactory.sol";
+import "../../contracts/virtualPersona/AgentToken.sol";
 
-// import "forge-std/Test.sol";
-// import "../../contracts/virtualPersona/AgentToken.sol";
-// import "./handler.t.sol";
-// import "../mocks/ERC20Mock.sol";
+//https://claude.ai/chat/6bc4ba55-9759-451c-a2a6-a288914e4adb
+contract AgentTokenInvariantTest is Test {
+    AgentTokenHandler public handler;
+    AgentToken public agentTokenImplementation;
+    AgentToken public agentTokenProxy;
 
-// contract AgentTokenInvariant is Test {
-//     AgentToken token;
-//     AgentTokenHandler handler;
-//     MockERC20 pairToken;
-//     address owner = makeAddr("owner");
-//     address factory = makeAddr("factory");
-//     address lpOwner = makeAddr("lpOwner");
+    MockUniswapRouter public uniswapRouter;
+    MockUniswapFactory public uniswapFactory;
 
-//     function setUp() external {
-//         /** ---------- deploy mocks ---------- */
-//         // fake LP token (also doubles as the “pair” address)
-//         pairToken = new MockERC20("PAIR", "PR");
-//         pairToken.mint(address(this), 1_000_000 ether);
+    address public mockVault = makeAddr("mockVault");
+    address public mockProjectTaxRecipient =
+        makeAddr("mockProjectTaxRecipient");
+    address public mockFactory = makeAddr("mockFactory");
+    address public tokenAdmin = makeAddr("tokenAdmin");
+    address public mockLpOwner = makeAddr("mockLpOwner");
 
-//         // the pair address itself just re-uses the ERC-20 contract
-//         MockUniswapRouter router = new MockUniswapRouter(address(pairToken));
+    uint256 public constant MAX_SUPPLY = 2000000;
+    uint256 public constant LP_SUPPLY = MAX_SUPPLY / 2;
+    uint256 public constant VAULT_SUPPLY = MAX_SUPPLY / 2;
+    uint256 public constant BOT_PROTECTION_DURATION = 300;
+    uint256 public constant PROJECT_BUY_TAX_BASIS_POINTS = 200;
+    uint256 public constant PROJECT_SELL_TAX_BASIS_POINTS = 300;
+    uint256 public constant TAX_SWAP_THRESHOLD_BASIS_POINTS = 10;
+    //10,0000
+    uint256 public constant MAX_TOKENS_PER_WALLET = 0;
+    uint256 public constant MAX_TOKENS_PER_TXN = 0;
+    address public constant PROJECT_TAX_RECIPIENT = address(0x9);
 
-//         /** ---------- deploy & initialise AgentToken ---------- */
-//         token = new AgentToken();
+    function setUp() public {
+        uniswapRouter = new MockUniswapRouter();
+        uniswapFactory = new MockUniswapFactory();
+        ERC20Mock pairToken = new ERC20Mock(); // One side of the pair (e.g., USDC)
 
-//         // encode the parameters the contract expects
-//         AgentToken.ERC20SupplyParameters memory supplyParams = AgentToken
-//             .ERC20SupplyParameters({
-//                 maxSupply: 1_000_000,
-//                 lpSupply: 10_000,
-//                 vaultSupply: 990_000,
-//                 botProtectionDurationInSeconds: 0,
-//                 vault: owner
-//             });
+        // Create a separate token for LP shares (pool)
+        ERC20Mock lpToken = new ERC20Mock();
 
-//         AgentToken.ERC20TaxParameters memory taxParams = AgentToken
-//             .ERC20TaxParameters({
-//                 projectBuyTaxBasisPoints: 300, // 3 %
-//                 projectSellTaxBasisPoints: 300,
-//                 taxSwapThresholdBasisPoints: 50, // 0.5 %
-//                 projectTaxRecipient: owner
-//             });
+        uniswapRouter.setFactory(address(uniswapFactory));
 
-//         bytes memory base = abi.encode("AgentToken", "AGT");
-//         bytes memory supply = abi.encode(supplyParams);
-//         bytes memory tax = abi.encode(taxParams);
+        bytes memory agentTokenBaseParams = abi.encode("Test Token", "TEST");
 
-//         address[3] memory integration = [
-//             owner,
-//             address(router),
-//             address(pairToken)
-//         ];
-//         vm.prank(factory);
-//         token.initialize(integration, base, supply, tax);
+        bytes memory agentTokenSupplyParams = abi.encode(
+            MAX_SUPPLY, // maxSupply
+            LP_SUPPLY, // lpSupply - supply of the AgentToken contract itself
+            VAULT_SUPPLY, // vaultSupply
+            MAX_TOKENS_PER_WALLET, // maxTokensPerWallet (0 means no limit)
+            MAX_TOKENS_PER_TXN, // maxTokensPerTxn (0 means no limit)
+            BOT_PROTECTION_DURATION, // botProtectionDurationInSeconds (5 minutes)
+            mockVault // vault address
+        );
 
-//         /** ---------- seed initial liquidity ---------- */
-//         // move the LP supply’s worth of tokens + some pair tokens into the AT contract
-//         uint256 lpAmt = 10_000 * 1e18;
-//         vm.prank(owner);
-//         pairToken.transfer(address(token), lpAmt); // fake equal value
-//         vm.prank(owner);
-//         token.addInitialLiquidity(lpOwner);
+        bytes memory agentTokenTaxParams = abi.encode(
+            uint256(PROJECT_BUY_TAX_BASIS_POINTS), // projectBuyTaxBasisPoints (2%)
+            uint256(PROJECT_SELL_TAX_BASIS_POINTS), // projectSellTaxBasisPoints (3%)
+            uint256(TAX_SWAP_THRESHOLD_BASIS_POINTS), // taxSwapThresholdBasisPoints (5%)
+            mockProjectTaxRecipient // projectTaxRecipient
+        );
 
-//         /** ---------- seed some holders ---------- */
-//         address;
-//         for (uint256 i; i < actors.length; ++i) {
-//             actors[i] = makeAddr(
-//                 string(abi.encodePacked("actor", vm.toString(i)))
-//             );
-//             // give everybody 1 000 AGT to play with
-//             token.transfer(actors[i], 1_000 * 1e18);
-//         }
+        pairToken.mint(address(mockFactory), 1000 ether);
 
-//         /** ---------- hook the handler ---------- */
-//         handler = new AgentTokenHandler(token, pairToken, actors);
-//         targetContract(address(handler));
-//     }
+        agentTokenImplementation = new AgentToken();
+        address proxyAddress = Clones.clone(address(agentTokenImplementation));
+        agentTokenProxy = AgentToken(payable(proxyAddress));
 
-//     /*//////////////////////////////////////////////////////////////
-//                             THE  INVARIANT
-//     //////////////////////////////////////////////////////////////*/
+        uniswapFactory.setPair(
+            address(agentTokenProxy),
+            address(pairToken),
+            address(lpToken)
+        );
 
-//     function invariant_PendingTaxAlwaysBacked() external view {
-//         assertLe(
-//             token.projectTaxPendingSwap(),
-//             token.balanceOf(address(token))
-//         );
-//     }
-// }
+        vm.startPrank(mockFactory);
+        agentTokenProxy.initialize(
+            [tokenAdmin, address(uniswapRouter), address(pairToken)],
+            agentTokenBaseParams,
+            agentTokenSupplyParams,
+            agentTokenTaxParams
+        );
 
-// contract MockUniswapRouter {
-//     address private _factory;
+        // This checks _mintBalances for lpsupply
+        assertEq(
+            agentTokenProxy.balanceOf(address(agentTokenProxy)),
+            LP_SUPPLY * (10 ** agentTokenProxy.decimals())
+        );
 
-//     function setFactory(address factory_) external {
-//         _factory = factory_;
-//     }
+        // This checks _mintBalances for vaultsupply
+        assertEq(
+            agentTokenProxy.balanceOf(address(mockVault)),
+            VAULT_SUPPLY * (10 ** agentTokenProxy.decimals())
+        );
 
-//     function factory() external view returns (address) {
-//         return _factory;
-//     }
+        // This checks _createPair
+        assertEq(
+            agentTokenProxy.liquidityPools()[0],
+            uniswapFactory.getPair(address(agentTokenProxy), address(pairToken))
+        );
 
-//     function addLiquidity(
-//         address tokenA,
-//         address tokenB,
-//         uint amountADesired,
-//         uint amountBDesired,
-//         uint amountAMin,
-//         uint amountBMin,
-//         address to,
-//         uint deadline
-//     ) external returns (uint amountA, uint amountB, uint liquidity) {
-//         // Get the LP token from the factory
-//         address lpToken = IUniswapV2Factory(_factory).getPair(tokenA, tokenB);
+        // here agentFactory would typically do this transfer
+        pairToken.transfer(address(agentTokenProxy), 100 ether);
+        agentTokenProxy.addInitialLiquidity(mockLpOwner);
 
-//         // Actually transfer the tokens from their sources
-//         IERC20(tokenA).transferFrom(msg.sender, lpToken, amountADesired);
-//         IERC20(tokenB).transferFrom(msg.sender, lpToken, amountBDesired);
+        // after addLiquidity, agentTokens are transfered from agentTokenProxy to LP-pool
+        assertEq(agentTokenProxy.balanceOf(address(agentTokenProxy)), 0);
 
-//         // Mint LP tokens to the recipient
-//         ERC20Mock(lpToken).mint(to, amountADesired);
+        // assert that LP-pool has the correct balance of agentTokens
+        assertEq(
+            agentTokenProxy.balanceOf(
+                uniswapFactory.getPair(
+                    address(agentTokenProxy),
+                    address(pairToken)
+                )
+            ),
+            LP_SUPPLY * (10 ** agentTokenProxy.decimals())
+        );
 
-//         return (amountADesired, amountBDesired, amountADesired);
-//     }
+        vm.stopPrank();
 
-//     function swapExactTokensForTokensSupportingFeeOnTransferTokens(
-//         uint amountIn,
-//         uint amountOutMin,
-//         address[] calldata path,
-//         address to,
-//         uint deadline
-//     ) external returns (uint[] memory amounts) {
-//         // Mock implementation
-//         uint[] memory result = new uint[](path.length);
-//         result[0] = amountIn;
-//         result[1] = amountIn;
-//         return result;
-//     }
-// }
+        handler = new AgentTokenHandler(
+            agentTokenProxy,
+            pairToken,
+            uniswapRouter,
+            mockProjectTaxRecipient,
+            mockVault
+        );
 
-// contract MockUniswapFactory {
-//     // Map token pairs to their LP token
-//     mapping(address => mapping(address => address)) private _pairs;
+        targetContract(address(handler));
+    }
 
-//     function setPair(address tokenA, address tokenB, address lpToken) external {
-//         _pairs[tokenA][tokenB] = lpToken;
-//         _pairs[tokenB][tokenA] = lpToken; // Ensure order doesn't matter
-//     }
+    // swapThresholdInTokens_ 100,000.000000000000000000
+    // taxBalance_ 77602639172382557124589
 
-//     function getPair(
-//         address tokenA,
-//         address tokenB
-//     ) external view returns (address) {
-//         return _pairs[tokenA][tokenB];
-//     }
+    //   ghost_totalTaxCollected 88,796.341286286042816144
+    // 100,000
+    //   ghost_totalAutoSwaps 0
 
-//     function createPair(
-//         address tokenA,
-//         address tokenB
-//     ) external returns (address) {
-//         // In a real implementation, this would deploy a new pair contract
-//         // For mock purposes, we'd just set it in our mapping
-//         ERC20Mock newPair = new ERC20Mock();
-//         address pairAddress = address(newPair);
+    // swapThresholdInTokens_ 100,000.000000000000000000
+    // taxBalance_ 73,117.827735972297057079
 
-//         _pairs[tokenA][tokenB] = pairAddress;
-//         _pairs[tokenB][tokenA] = pairAddress;
+    // Your main invariant
+    function invariant_PendingTaxAlwaysBacked() external view {
+        // log ghost variables
+        console2.log(
+            "ghost_totalTaxCollected",
+            handler.ghost_totalTaxCollected()
+        );
+        console2.log("ghost_totalAutoSwaps", handler.ghost_totalAutoSwaps());
 
-//         return pairAddress;
-//     }
-// }
+        assertEq(
+            agentTokenProxy.projectTaxPendingSwap(),
+            agentTokenProxy.balanceOf(address(agentTokenProxy)),
+            "Pending tax exceeds contract balance"
+        );
+        //104422656275585623022
+        //104422656275585623022
+        //ghost total - 75481220571219092001518
+    }
+}
